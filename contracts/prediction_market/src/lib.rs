@@ -10,6 +10,8 @@ use soroban_sdk::{
 const MIN_BET: i128 = 10_000_000; // 1 XLM in stroops
 
 const MAX_BETS_PER_USER: u32 = 20;
+// Global cap on distinct markets one address can bet in (#17).
+const MAX_GLOBAL_BETS_PER_USER: u32 = 100;
 const MAX_MARKETS_PER_HOUR: u32 = 10;
 
 // Fee constants — multiply before divide to avoid precision loss
@@ -67,6 +69,8 @@ pub enum DataKey {
     Market(u64),
     Bet(u64, Address),     // net + gross + count packed; see BetEntry
     BettorCount(u64),
+    // Number of distinct markets an address has bet in, across all markets (#17).
+    GlobalBetCount(Address),
     BettorAt(u64, u32),
     Resolver(Address),
     FeeRecipient(Address),
@@ -320,6 +324,16 @@ impl PredictionMarketContract {
         }
 
         let is_increase = existing.is_some();
+
+        // Global risk cap (#17): a new market entry counts against the user's total across markets.
+        let global_key = DataKey::GlobalBetCount(user.clone());
+        let global_count: u32 = env.storage().persistent().get(&global_key).unwrap_or(0);
+        if !is_increase {
+            if global_count >= MAX_GLOBAL_BETS_PER_USER {
+                return Err(MarketError::TooManyBets);
+            }
+            env.storage().persistent().set(&global_key, &(global_count + 1));
+        }
 
         // ── Fee calculation — use precomputed multipliers ─────────────────
         let total_fee    = amount * TOTAL_FEE_BPS / BPS_DENOM;
